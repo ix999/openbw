@@ -7,6 +7,7 @@
 #include "replay_saver.h"
 
 #include <chrono>
+#include <cstdlib>
 #include <random>
 #include <thread>
 #include <functional>
@@ -14,6 +15,26 @@
 #include <typeinfo>
 
 namespace bwgame {
+
+inline bool configured_game_seed(uint32_t& value) {
+	const char* text = std::getenv("OPENBW_GAME_SEED");
+	if (!text || !*text) return false;
+	char* end = nullptr;
+	const unsigned long parsed = std::strtoul(text, &end, 0);
+	if (!end || *end != '\0') return false;
+	value = static_cast<uint32_t>(parsed);
+	return true;
+}
+
+inline bool configured_client_index(uint32_t& value) {
+	const char* text = std::getenv("OPENBW_CLIENT_INDEX");
+	if (!text || !*text) return false;
+	char* end = nullptr;
+	const unsigned long parsed = std::strtoul(text, &end, 0);
+	if (!end || *end != '\0') return false;
+	value = static_cast<uint32_t>(parsed);
+	return true;
+}
 
 struct sync_state {
 	struct scheduled_action {
@@ -33,6 +54,17 @@ struct sync_state {
 		std::array<uint32_t, 8> vals{};
 		static uid_t generate() {
 			uid_t r;
+			uint32_t configured_seed = 0;
+			uint32_t client_index = 0;
+			if (configured_game_seed(configured_seed) &&
+			    configured_client_index(client_index)) {
+				uint32_t state = configured_seed ^ (0x9e3779b9u * (client_index + 1u));
+				for (size_t i = 0; i != r.vals.size(); ++i) {
+					state = state * 1664525u + 1013904223u + static_cast<uint32_t>(i);
+					r.vals[i] = state ^ (0x85ebca6bu * static_cast<uint32_t>(i + 1u));
+				}
+				return r;
+			}
 			std::array<uint32_t, 8> arr;
 			arr[0] = 42;
 			arr[1] = (uint32_t)std::chrono::high_resolution_clock::now().time_since_epoch().count();
@@ -507,8 +539,10 @@ struct sync_functions: action_functions {
 			writer<5> w;
 			w.put<uint8_t>(sync_messages::id_start_game);
 			uint32_t seed = 0;
-			for (uint32_t v : sync_state::uid_t::generate().vals) {
-				seed ^= v;
+			if (!configured_game_seed(seed)) {
+				for (uint32_t v : sync_state::uid_t::generate().vals) {
+					seed ^= v;
+				}
 			}
 			w.put<uint32_t>(seed);
 			send(w);
