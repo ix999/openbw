@@ -107,6 +107,8 @@ struct sync_server_asio_socket {
 		std::function<void()> on_kill;
 		std::function<void(const void*, size_t)> on_message;
 		bool allow_send = false;
+		bool write_in_flight = false;
+		std::vector<asio::const_buffer> gather_bufs;
 	};
 	
 	a_list<client_t> clients;
@@ -163,27 +165,50 @@ struct sync_server_asio_socket {
 		if (ec) {
 			if (c->on_kill) c->on_kill();
 		} else {
-			auto& v = c->send_queue.front();
-			if (bytes_transferred > v.size) error("write_handler: bytes_transferred > v.size");
-			v.offset += bytes_transferred;
-			v.size -= bytes_transferred;
-			if (v.size == 0) c->send_queue.pop_front();
+			size_t n = bytes_transferred;
+			while (n) {
+				if (c->send_queue.empty()) error("write_handler: bytes_transferred > queued bytes");
+				auto& v = c->send_queue.front();
+				size_t take = v.size < n ? v.size : n;
+				v.offset += take;
+				v.size -= take;
+				n -= take;
+				if (v.size == 0) c->send_queue.pop_front();
+			}
+			c->write_in_flight = false;
 			if (!c->send_queue.empty()) send_send_queue(c);
 		}
 	}
-	
+
 	void send_send_queue(client_t* client) {
-		auto& v = client->send_queue.front();
-		client->socket.async_write_some(asio::buffer(v.buffer->buffer.data() + v.offset, v.size), std::bind(&sync_server_asio_socket::write_handler, this, async_handle(client, std::bind(&sync_server_asio_socket::async_release, this, std::placeholders::_1)), std::placeholders::_1, std::placeholders::_2));
+		// Gather every queued message range into one scatter write: the payloads are tiny
+		// (frame syncs ~4 bytes) so the per-write syscall dominates. The byte order on the
+		// wire is exactly the queue order — the peer's parser sees an identical stream.
+		auto& bufs = client->gather_bufs;
+		bufs.clear();
+		for (auto& v : client->send_queue) {
+			if (bufs.size() == 64) break;
+			bufs.emplace_back(v.buffer->buffer.data() + v.offset, v.size);
+		}
+		client->write_in_flight = true;
+		client->socket.async_write_some(bufs, std::bind(&sync_server_asio_socket::write_handler, this, async_handle(client, std::bind(&sync_server_asio_socket::async_release, this, std::placeholders::_1)), std::placeholders::_1, std::placeholders::_2));
 	}
-	
+
 	void send_to(const message_t& d, client_t* client) {
 		if (!client->allow_send) return;
 		for (auto& v : d.buffers) {
 			client->send_queue.push_back(v);
-			if (client->send_queue.size() == 1) {
-				send_send_queue(client);
-			}
+		}
+	}
+
+	// Deferred-send flush: sends queue in send_to and go to the wire here, so a frame's worth
+	// of messages becomes one write. Called on entry to poll()/run_one() — before any wait can
+	// begin — and again after their new-client callbacks, so nothing queued can outlive the
+	// event-loop boundary that follows it.
+	void flush_sends() {
+		for (auto& c : clients) {
+			if (c.is_dead) continue;
+			if (!c.write_in_flight && !c.send_queue.empty()) send_send_queue(&c);
 		}
 	}
 	
@@ -275,22 +300,26 @@ struct sync_server_asio_socket {
 	
 	template<typename on_new_client_F>
 	void poll(on_new_client_F&& on_new_client) {
+		flush_sends();
 		io_service.poll();
 		for (auto* c : new_clients) {
 			c->allow_send = true;
 			on_new_client(c);
 		}
 		new_clients.clear();
+		flush_sends();
 	}
-	
+
 	template<typename on_new_client_F>
 	void run_one(on_new_client_F&& on_new_client) {
+		flush_sends();
 		if (!io_service.run_one()) error("asio io_service has no work");
 		for (auto* c : new_clients) {
 			c->allow_send = true;
 			on_new_client(c);
 		}
 		new_clients.clear();
+		flush_sends();
 	}
 	
 	template<typename on_new_client_F, typename pred_F>
