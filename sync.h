@@ -7,7 +7,9 @@
 #include "replay_saver.h"
 
 #include <chrono>
+#include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <random>
 #include <thread>
 #include <functional>
@@ -240,6 +242,13 @@ struct sync_functions: action_functions {
 
 	template<typename action_F>
 	void execute_scheduled_actions(action_F&& action_f) {
+		// SB_SYNC_ACTION_LOG=1: print every executed action (game frame, client uid, payload
+		// hex) — the cross-mode divergence ledger for the dual-host equivalence gates. This is
+		// the one chokepoint every mode's actions pass through in deterministic order. Print-only.
+		static const bool sb_action_log = [] {
+			const char* e = std::getenv("SB_SYNC_ACTION_LOG");
+			return e && *e && *e != '0';
+		}();
 		for (auto i = sync_st.clients.begin(); i != sync_st.clients.end();) {
 			sync_state::client_t* c = &*i;
 			++i;
@@ -249,6 +258,16 @@ struct sync_functions: action_functions {
 				c->buffer_begin = act.data_end;
 				const uint8_t* data = c->buffer.data();
 				if (data + act.data_end > data + c->buffer.size()) error("data beyond end");
+				if (sb_action_log) {
+					char hex[3 * 64 + 4];
+					size_t n = act.data_end - act.data_begin;
+					size_t shown = n < 64 ? n : 64;
+					for (size_t j = 0; j != shown; ++j)
+						std::snprintf(hex + j * 2, 3, "%02x", data[act.data_begin + j]);
+					if (shown < n) std::memcpy(hex + shown * 2, "..", 3);
+					std::printf("SBACT f=%d uid=%08x n=%u b=%s\n", st.current_frame,
+					            (unsigned)c->uid.vals[0], (unsigned)n, hex);
+				}
 				data_loading::data_reader_le r(data + act.data_begin, data + act.data_end);
 				if (!action_f(c, r)) break;
 			}
