@@ -86,6 +86,24 @@ struct sync_state {
 			}
 			return r;
 		}
+		// Dual-host: the uid a separate process launched with OPENBW_CLIENT_INDEX=client_index
+		// would have generated — lets one process host a second local client under the exact
+		// LOCAL_AUTO uid conventions (sort order, lobby seating) the two-process reference uses.
+		static uid_t generate_for_index(uint32_t client_index) {
+			uid_t r;
+			uint32_t configured_seed = 0;
+			if (configured_game_seed(configured_seed)) {
+				uint32_t state = configured_seed ^ (0x9e3779b9u * (client_index + 1u));
+				for (size_t i = 0; i != r.vals.size(); ++i) {
+					state = state * 1664525u + 1013904223u + static_cast<uint32_t>(i);
+					r.vals[i] = state ^ (0x85ebca6bu * static_cast<uint32_t>(i + 1u));
+				}
+				return r;
+			}
+			r = generate();
+			r.vals[7] ^= 0x9e3779b9u * (client_index + 1u);
+			return r;
+		}
 		bool operator<(const uid_t& n) const {
 			return vals > n.vals;
 		}
@@ -116,6 +134,7 @@ struct sync_state {
 		a_string name;
 		bool game_started = false;
 		bool has_greeted = false;
+		bool local_secondary = false;
 		std::chrono::steady_clock::time_point last_synced;
 	};
 
@@ -973,6 +992,11 @@ struct sync_functions: action_functions {
 			}
 			++sync_st.sync_frame;
 			send_client_frame();
+			// Dual-host: in-process secondary clients have no peer process sending their frame
+			// counter — mirror the local client's so all_clients_in_sync sees them current.
+			for (auto* c : ptr(sync_st.clients)) {
+				if (c->local_secondary) c->frame = sync_st.local_client->frame;
+			}
 
 			if (sync_st.game_started && sync_st.sync_frame % 32 == 0) {
 				update_insync_hash();
@@ -1138,6 +1162,28 @@ struct sync_functions: action_functions {
 	template<typename server_T>
 	void input_action(server_T& server, const uint8_t* data, size_t size) {
 		get_syncer(server).send(data, size);
+	}
+
+	// Dual-host primitives: a second LOCAL client in this process (no transport, like
+	// local_client itself). Its actions enter through the same recv path a remote peer's
+	// would, so scheduling semantics (frame N+latency, uid-sorted application order) match
+	// LOCAL_AUTO by construction. Inert unless add_local_secondary_client is called.
+	sync_state::client_t* add_local_secondary_client(a_string name, uint32_t client_index) {
+		sync_st.clients.push_back({sync_state::uid_t::generate_for_index(client_index), true});
+		auto* c = &sync_st.clients.back();
+		c->local_secondary = true;
+		c->local_id = sync_st.next_client_id++;
+		c->name = std::move(name);
+		c->frame = sync_st.local_client->frame;
+		sync_st.clients.sort([&](auto& a, auto& b) {
+			return a.uid < b.uid;
+		});
+		return c;
+	}
+
+	template<typename server_T>
+	void input_action_for(server_T& server, sync_state::client_t* client, const uint8_t* data, size_t size) {
+		get_syncer(server).recv(client, data, size);
 	}
 
 	template<typename server_T>
