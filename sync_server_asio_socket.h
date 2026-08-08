@@ -23,11 +23,15 @@ namespace bwgame {
 
 template<typename socket_T>
 struct sync_server_asio_socket {
-	
-	asio::io_service io_service;
-	asio::io_service::work work{io_service};
-	asio::steady_timer timer{io_service};
-	
+
+	// NOTE: the asio members are declared AFTER send_buffers and clients (below) so they are
+	// destroyed FIRST. ~io_service's shutdown destroys every still-pending async operation,
+	// and each destroyed operation's bound handler releases against those containers
+	// (async_handle_t decrements client_t::async_count and may erase from `clients`;
+	// message_buffer_handle splices `send_buffers`). With the old order the containers were
+	// already freed and every game segfaulted post-END in async_release — the teardown crash
+	// that also ate unflushed stdout (the 2026-08-08 buffer-masking incident).
+
 	template<typename T, typename release_F>
 	struct async_handle_t {
 		T* obj;
@@ -112,7 +116,12 @@ struct sync_server_asio_socket {
 	};
 	
 	a_list<client_t> clients;
-	
+
+	// Destroyed before send_buffers/clients — see the note at the top of the struct.
+	asio::io_service io_service;
+	asio::io_service::work work{io_service};
+	asio::steady_timer timer{io_service};
+
 	typename send_buffers_t::iterator get_send_buffer_with_space(size_t n) {
 		for (auto i = send_buffers.begin(); i != send_buffers.end(); ++i) {
 			if (i->buffer.size() - i->pos >= n) return i;
