@@ -9512,6 +9512,52 @@ struct state_functions {
 		static_vector<node_t*, 150> open;
 
 		static_vector<node_t, 250> all_nodes;
+		// sb-perf short-path cut C: the per-neighbor node lookup was a linear scan over
+		// all_nodes (up to 250 entries, run for every neighbor of every expansion). Nodes
+		// are created only when a lookup misses, node positions never change, and the scan
+		// deliberately skips the start node — so the scan's result is exactly "the unique
+		// non-start node at this position, or none": a pure content-addressed lookup with
+		// no order dependence. An exact-key open-addressed table (generation-stamped so it
+		// is never cleared) returns the identical node pointer in every reachable state.
+		// SB_SHORT_PATH_NODE_MAP=0 restores the scan; =verify runs both and errors on any
+		// mismatch (scan stays the authority in that mode).
+		static const int sb_node_map_mode = [] {
+			const char* v = std::getenv("SB_SHORT_PATH_NODE_MAP");
+			if (!v) return 1;
+			if (!std::strcmp(v, "0")) return 0;
+			if (!std::strcmp(v, "verify")) return 2;
+			return 1;
+		}();
+		struct sb_node_map_t {
+			std::array<uint64_t, 512> keys{};  // (generation << 32) | (y << 16) | x
+			std::array<node_t*, 512> vals{};
+			uint32_t generation = 0;
+		};
+		static thread_local sb_node_map_t sb_node_map;
+		++sb_node_map.generation;
+		if (sb_node_map.generation == 0) {  // wrap: stale stamps could alias — reset
+			sb_node_map.keys.fill(0);
+			sb_node_map.generation = 1;
+		}
+		auto sb_node_map_slot = [](uint32_t packed) {
+			return (size_t)((packed * 0x9E3779B9u) >> 23) & 511;
+		};
+		auto sb_node_map_find = [&](xy pos) -> node_t* {
+			uint32_t packed = (uint32_t)pos.x | ((uint32_t)pos.y << 16);
+			uint64_t want = ((uint64_t)sb_node_map.generation << 32) | packed;
+			for (size_t h = sb_node_map_slot(packed);; h = (h + 1) & 511) {
+				uint64_t k = sb_node_map.keys[h];
+				if (k == want) return sb_node_map.vals[h];
+				if ((uint32_t)(k >> 32) != sb_node_map.generation) return nullptr;
+			}
+		};
+		auto sb_node_map_insert = [&](xy pos, node_t* n) {
+			uint32_t packed = (uint32_t)pos.x | ((uint32_t)pos.y << 16);
+			size_t h = sb_node_map_slot(packed);
+			while ((uint32_t)(sb_node_map.keys[h] >> 32) == sb_node_map.generation) h = (h + 1) & 511;
+			sb_node_map.keys[h] = ((uint64_t)sb_node_map.generation << 32) | packed;
+			sb_node_map.vals[h] = n;
+		};
 		all_nodes.emplace_back();
 		node_t* start_node = &all_nodes.back();
 		start_node->pos = pf.source;
@@ -10428,15 +10474,23 @@ struct state_functions {
 				}
 				fp8 total_cost = cur->total_cost + cost;
 				node_t* n = nullptr;
-				for (auto i = std::next(all_nodes.begin()); i != all_nodes.end(); ++i) {
-					if (i->pos == v.pos) {
-						n = &*i;
-						break;
+				if (sb_node_map_mode == 1) {
+					n = sb_node_map_find(v.pos);
+				} else {
+					for (auto i = std::next(all_nodes.begin()); i != all_nodes.end(); ++i) {
+						if (i->pos == v.pos) {
+							n = &*i;
+							break;
+						}
+					}
+					if (sb_node_map_mode == 2 && sb_node_map_find(v.pos) != n) {
+						error("SB_SHORT_PATH_NODE_MAP verify: table/scan mismatch");
 					}
 				}
 				if (!n) {
 					all_nodes.emplace_back();
 					n = &all_nodes.back();
+					if (sb_node_map_mode != 0) sb_node_map_insert(v.pos, n);
 					n->prev = cur;
 					n->pos = v.pos;
 					n->region = n_region;
