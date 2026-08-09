@@ -172,6 +172,13 @@ struct sync_server_asio_socket {
 	
 	void write_handler(client_t* c, const asio::error_code& ec, size_t bytes_transferred) {
 		if (ec) {
+			// SB_KILL_LOG companion (task #35): name the socket error that triggers a kill.
+			static const bool sb_sock_log = [] {
+				const char* v = std::getenv("SB_KILL_LOG");
+				return v && *v && *v != '0';
+			}();
+			if (sb_sock_log)
+				std::printf("SBSOCK write-error '%s'\n", ec.message().c_str());
 			if (c->on_kill) c->on_kill();
 		} else {
 			size_t n = bytes_transferred;
@@ -269,6 +276,12 @@ struct sync_server_asio_socket {
 	
 	void read_handler(client_t* c, const asio::error_code& ec, size_t bytes_transferred) {
 		if (ec) {
+			static const bool sb_sock_log = [] {
+				const char* v = std::getenv("SB_KILL_LOG");
+				return v && *v && *v != '0';
+			}();
+			if (sb_sock_log)
+				std::printf("SBSOCK read-error '%s'\n", ec.message().c_str());
 			if (c->on_kill) c->on_kill();
 		} else {
 			c->recv_buffer.resize(c->recv_buffer.size() - recv_size + bytes_transferred);

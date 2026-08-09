@@ -13174,6 +13174,15 @@ struct state_functions {
 			for (int i = 0; i != 8; ++i) {
 				int s = ets.victory_state[i];
 				if (s != st.players[i].victory_state) {
+					// SB_VICTORY_LOG: print-only probe — every victory_state transition, for the
+					// two-process endgame winner-flag investigation (dual battery seed-606).
+					static const bool sb_victory_log = [] {
+						const char* v = std::getenv("SB_VICTORY_LOG");
+						return v && *v && *v != '0';
+					}();
+					if (sb_victory_log)
+						std::printf("SBVIC f=%d owner=%d %d->%d\n", (int)st.current_frame, i,
+						            st.players[i].victory_state, s);
 					st.players[i].victory_state = s;
 					on_victory_state(i, s);
 					if (s == 2) {

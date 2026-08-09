@@ -1465,6 +1465,19 @@ struct action_functions: state_functions {
 			size_t actions_size = r.get<uint8_t>();
 			const uint8_t* ptr = r.get_n(actions_size);
 			const uint8_t* end = ptr + actions_size;
+			// SB_REPLAY_ACTION_LOG: print-only probe seam (mirrors SB_SYNC_ACTION_LOG for the
+			// replay path) — one line per stored action record so two replays' command streams
+			// diff textually. The divergence-from-the-beginning microscope; see
+			// docs/design/ENGINE_OPT_MIRROR.md.
+			static const bool sb_replay_action_log = [] {
+				const char* v = std::getenv("SB_REPLAY_ACTION_LOG");
+				return v && *v && *v != '0';
+			}();
+			if (sb_replay_action_log) {
+				std::printf("SBRACT f=%d n=%d b=", (int)st.current_frame, (int)actions_size);
+				for (const uint8_t* p = ptr; p != end; ++p) std::printf("%02x", *p);
+				std::printf("\n");
+			}
 			data_loading::data_reader_le r2(ptr, end);
 			while (r2.ptr != end) {
 				read_action(r2);

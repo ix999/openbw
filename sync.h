@@ -428,6 +428,8 @@ struct sync_functions: action_functions {
 		sync_state& sync_st;
 		syncer_t(sync_functions& funcs, server_T& server) : funcs(funcs), server(server), st(funcs.st), sync_st(funcs.sync_st) {}
 
+		const char* sb_kill_why = nullptr; // SB_KILL_LOG caller tag (probe only)
+
 		const uint32_t greeting_value = 0x39e25069;
 
 		void send(const uint8_t* data, size_t size, const void* h = nullptr) {
@@ -453,14 +455,18 @@ struct sync_functions: action_functions {
 				sync_state::uid_t uid;
 				for (auto& v : uid.vals) v = r.template get<uint32_t>();
 				if (get_client(uid)) {
+					sb_kill_why = "uid-duplicate";
 					this->kill_client(client);
+					sb_kill_why = nullptr;
 				} else {
 					size_t clients_with_uid = 0;
 					for (auto* c : ptr(sync_st.clients)) {
 						if (c->has_uid) ++clients_with_uid;
 					}
 					if (clients_with_uid >= 2) {
+						sb_kill_why = "lobby-full";
 						this->kill_client(client);
+						sb_kill_why = nullptr;
 					} else {
 						client->uid = uid;
 						client->has_uid = true;
@@ -496,7 +502,11 @@ struct sync_functions: action_functions {
 				break;
 			}
 			default:
-				if (!client->has_uid) kill_client(client);
+				if (!client->has_uid) {
+					sb_kill_why = "msg-before-uid";
+					kill_client(client);
+					sb_kill_why = nullptr;
+				}
 				else {
 					r.seek(t);
 					funcs.schedule_action(client, r);
@@ -531,6 +541,17 @@ struct sync_functions: action_functions {
 		}
 
 		void kill_client(sync_state::client_t* client, bool player_left = false) {
+			// SB_KILL_LOG: print-only probe — every client kill with its slot and frame; the
+			// caller identifies itself via sb_kill_why (task #35: locally fabricated {87,6}
+			// drops make the defeated side's sim declare self-victory).
+			static const bool sb_kill_log = [] {
+				const char* v = std::getenv("SB_KILL_LOG");
+				return v && *v && *v != '0';
+			}();
+			if (sb_kill_log)
+				std::printf("SBKILL f=%d slot=%d left=%d why=%s\n", (int)st.current_frame,
+				            client->player_slot, (int)player_left,
+				            sb_kill_why ? sb_kill_why : "socket-on-kill");
 			if (client->player_slot != -1) {
 				if (sync_st.game_started) {
 					auto w = get_player_left_action(player_left);
@@ -668,7 +689,9 @@ struct sync_functions: action_functions {
 			if (!client->has_greeted) {
 				auto v = r.get<uint32_t>();
 				if (v != greeting_value) {
+					sb_kill_why = "bad-greeting";
 					kill_client(client);
+					sb_kill_why = nullptr;
 				} else client->has_greeted = true;
 				return;
 			}
@@ -687,7 +710,9 @@ struct sync_functions: action_functions {
 				++i;
 				if (now - c->last_synced >= std::chrono::seconds(60)) {
 					if ((int8_t)(sync_st.sync_frame - c->frame) >= (int8_t)sync_st.latency) {
+						sb_kill_why = "sync-timeout";
 						kill_client(c);
+						sb_kill_why = nullptr;
 					}
 				}
 			}
@@ -910,7 +935,19 @@ struct sync_functions: action_functions {
 							}
 							funcs.read_action(client->player_slot, r);
 							if (st.players.at(client->player_slot).controller != player_t::controller_occupied) {
-								if (client != sync_st.local_client) this->kill_client(client);
+								// Task #35 defect fix: a player leaving/being eliminated must NOT kill the
+								// peer CONNECTION mid-session. The old kill_client fabricated a {87,6} drop
+								// into this sim and closed the socket; the peer's sync then fabricated its
+								// own {87,6} back, and a DEFEATED side — its opponent list emptied — could
+								// declare itself victorious (dual-battery seed-606 double-win, the ZvZ
+								// analogue for eliminations, and the task-#29 tail drift). Unbind the slot
+								// and drop the client's remaining schedule; the connection lives until the
+								// process exits (launcher end grace), and the eventual socket close finds
+								// player_slot == -1, so no drop action is ever fabricated.
+								if (client != sync_st.local_client) {
+									client->player_slot = -1;
+									this->clear_scheduled_actions(client);
+								}
 								else this->clear_scheduled_actions(client);
 								return false;
 							}
@@ -1209,6 +1246,7 @@ struct sync_functions: action_functions {
 	void leave_game(server_T& server) {
 		get_syncer(server).leave_game();
 	}
+
 
 	int connected_player_count() {
 		int clients_with_uid = 0;
