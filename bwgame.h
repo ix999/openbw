@@ -9459,7 +9459,23 @@ struct state_functions {
 			a_vector<rect> visited_areas;
 		};
 
-		pf_search w;
+		// sb-perf short-path cut A: the search scratch (four local_edges vectors, the
+		// visited_areas vector and the pf_area_visited column vector below) is rebuilt from
+		// empty on every call — at hundreds of calls per frame that is pure allocator churn.
+		// Reuse thread_local storage, cleared at entry: the logical state after clear() is
+		// identical to a fresh object, only the heap capacity persists. Calls never nest and
+		// dual-host sims interleave strictly sequentially on one thread, so per-call clearing
+		// fully isolates them. SB_SHORT_PATH_SCRATCH=0 is the kill-switch (fresh locals).
+		static const bool sb_short_path_scratch = [] {
+			const char* v = std::getenv("SB_SHORT_PATH_SCRATCH");
+			return !v || std::strcmp(v, "0") != 0;
+		}();
+		static thread_local pf_search w_scratch_storage;
+		pf_search w_local_storage;
+		pf_search& w = sb_short_path_scratch ? w_scratch_storage : w_local_storage;
+		for (auto& v : w.local_edges) v.clear();
+		w.visited_areas.clear();
+		w.neighbors.clear();
 
 		w.u = pf.u;
 		w.target_unit = pf.target_unit;
@@ -9512,7 +9528,15 @@ struct state_functions {
 			a_vector<std::pair<int, int>> y;
 		};
 
-		a_vector<visited> pf_area_visited;
+		// Same reuse discipline as the pf_search scratch above: the outer column vector's
+		// capacity persists across calls (clear() at entry). The inner y interval vectors
+		// are still rebuilt per call — their pooling is the separate cut B (structure
+		// redesign), not this allocation cut.
+		static thread_local a_vector<visited> pf_area_visited_storage;
+		a_vector<visited> pf_area_visited_local;
+		a_vector<visited>& pf_area_visited =
+		    sb_short_path_scratch ? pf_area_visited_storage : pf_area_visited_local;
+		pf_area_visited.clear();
 		pf_area_visited.push_back({0, {}});
 		pf_area_visited.push_back({(int)game_st.map_width, {}});
 
