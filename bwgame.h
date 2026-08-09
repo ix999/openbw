@@ -9523,20 +9523,18 @@ struct state_functions {
 		open.push_back(start_node);
 		binary_heap_up(std::prev(open.end()), open.begin(), open.end(), cmp_node());
 
+		// Cut B: both levels of the visited structure are BOUNDED BY THE ALGORITHM ITSELF
+		// (the marking code returns at 128+1 columns and 10 intervals per column — see
+		// pf_mark_visited), so fixed-capacity inline storage replaces the heap vectors:
+		// zero allocation, POD memmoves for the middle inserts, and the column-split copy
+		// ({x, cur->y}) becomes an inline copy instead of a fresh heap vector. Values and
+		// iteration orders are identical by construction; ~13KB of stack.
 		struct visited {
 			int x;
-			a_vector<std::pair<int, int>> y;
+			static_vector<std::pair<int, int>, 10> y;
 		};
 
-		// Same reuse discipline as the pf_search scratch above: the outer column vector's
-		// capacity persists across calls (clear() at entry). The inner y interval vectors
-		// are still rebuilt per call — their pooling is the separate cut B (structure
-		// redesign), not this allocation cut.
-		static thread_local a_vector<visited> pf_area_visited_storage;
-		a_vector<visited> pf_area_visited_local;
-		a_vector<visited>& pf_area_visited =
-		    sb_short_path_scratch ? pf_area_visited_storage : pf_area_visited_local;
-		pf_area_visited.clear();
+		static_vector<visited, 128 + 1> pf_area_visited;
 		pf_area_visited.push_back({0, {}});
 		pf_area_visited.push_back({(int)game_st.map_width, {}});
 

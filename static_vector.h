@@ -443,6 +443,21 @@ public:
 			i = ni;
 		}
 	}
+	iterator insert(const iterator pos, const value_type& value) {
+		if (size() == capacity()) throw std::length_error("static_vector resized beyond capacity");
+		pointer p = pos.ptr;
+		pointer e = ptr_end();
+		if (p == e) {
+			new (e) value_type(value);
+			m_end = e + 1;
+			return pos;
+		}
+		new (e) value_type(std::move(*(e - 1)));
+		for (pointer i = e - 1; i != p; --i) *i = std::move(*(i - 1));
+		*p = value;
+		m_end = e + 1;
+		return pos;
+	}
 };
 
 }
