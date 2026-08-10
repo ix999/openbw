@@ -117,6 +117,28 @@ struct sync_server_asio_socket {
 	
 	a_list<client_t> clients;
 
+	// Teardown, part two. Declaration order alone CANNOT make this safe, because the two
+	// constraints are mutually exclusive:
+	//   * pending async handlers reference `clients` and `send_buffers`, so ~io_service (which
+	//     destroys those handlers) must run FIRST — that is the note above, and the fix for the
+	//     2026-08-08 async_release crash;
+	//   * each client's socket must deregister its descriptor from the reactor OWNED by that
+	//     same io_service, so the reactor must outlive the sockets — the exact opposite.
+	// With the current order every process died the other way instead: ~client_t -> socket
+	// destructor -> kqueue_reactor::deregister_descriptor -> pthread_mutex_lock on a freed
+	// reactor mutex (EXC_BAD_ACCESS at 0x90). Both two-process games crashed at exit, all day,
+	// unseen because the message goes to the harness's stderr rather than the game log.
+	//
+	// This destructor breaks the deadlock by removing the second constraint before either
+	// member is touched: a destructor body runs BEFORE member destruction, and a socket that is
+	// already closed has no descriptor left to deregister. Teardown-only — it runs after the
+	// final frame, so it cannot affect game state or determinism.
+	~sync_server_asio_socket() {
+		// Same idiom as kill_client below: this wrapper's close() takes no error_code.
+		for (auto& c : clients)
+			if (c.socket.is_open()) c.socket.close();
+	}
+
 	// Destroyed before send_buffers/clients — see the note at the top of the struct.
 	asio::io_service io_service;
 	asio::io_service::work work{io_service};
