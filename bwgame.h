@@ -21994,6 +21994,21 @@ struct game_load_functions : state_functions {
 	}
 };
 
+// sb (headless GRP decode skip): a frame's pixel data — frame_t::data_container and
+// line_data_offset — is read ONLY by the renderer (ui/ui.h draw_frame, the two sites verified
+// as the sole readers). The simulation reads only frame HEADERS (offset, size, frame count,
+// width/height) via iscript image animation. So under a headless run the per-frame RLE decode
+// below is pure waste. Opt-in, default OFF: OPENBW_SKIP_GRP_DECODE=1 skips it; unset/0 keeps the
+// full decode (kill-switch). Byte-identical simulation is provable on the rule-9 ladder because
+// no simulation path reads a decoded byte — only the frame headers, still parsed either way.
+inline bool skip_grp_pixel_decode() {
+	static const bool skip = [] {
+		const char* v = std::getenv("OPENBW_SKIP_GRP_DECODE");
+		return v && v[0] == '1';
+	}();
+	return skip;
+}
+
 template<typename reader_T>
 grp_t read_grp(reader_T&& r) {
 	auto base_r = r;
@@ -22002,6 +22017,7 @@ grp_t read_grp(reader_T&& r) {
 	grp.width = r.template get<uint16_t>();
 	grp.height = r.template get<uint16_t>();
 	grp.frames.resize(frame_count);
+	const bool skipPixels = skip_grp_pixel_decode();
 	for (size_t i = 0; i != frame_count; ++i) {
 		auto& f = grp.frames[i];
 		f.offset.x = r.template get<uint8_t>();
@@ -22009,6 +22025,9 @@ grp_t read_grp(reader_T&& r) {
 		f.size.x = r.template get<uint8_t>();
 		f.size.y = r.template get<uint8_t>();
 		size_t file_offset = r.template get<uint32_t>();
+		// Header (offset/size) captured above and file_offset consumed to keep `r` aligned for
+		// the next frame; the remaining body only fills the renderer-only pixel containers.
+		if (skipPixels) continue;
 		auto line_offset_r = base_r;
 		line_offset_r.skip(file_offset);
 		f.line_data_offset.reserve(f.size.y);
