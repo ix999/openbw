@@ -5,6 +5,9 @@
 #include "data_types.h"
 #include "containers.h"
 
+#include <memory>
+#include <new>
+
 namespace bwgame {
 
 struct sprite_t;
@@ -46,40 +49,82 @@ static void bw_insert_list(cont_T& cont, T& v) {
 
 template<typename T, size_t max_size, size_t allocation_granularity>
 struct object_container {
-	a_deque<std::array<T, allocation_granularity>> list;
+	// FLAT storage (was a_deque of allocation_granularity-sized blocks): one contiguous buffer,
+	// allocated in full before the first object is handed out, so grow() NEVER relocates — the
+	// engine holds T* across frames and the state_copier holds them across assembly. Index math,
+	// grow cadence, index assignment and free-list order are unchanged; objects live at the same
+	// logical index as before, only the block indirection (and its div/mod + scattered heap
+	// blocks) is gone. Raw storage + placement-new rather than a vector because T (e.g. unit_t)
+	// carries an anonymous union with intrusive-list members, which deletes its copy AND move
+	// constructors — vector's relocation machinery would not compile, and must never run anyway.
+	// The container lives in state_base_non_copyable, so it is only ever moved (buffer steal,
+	// explicit below) or rebuilt via get() — element-wise copies cannot occur.
+	using storage_t = typename std::aligned_storage<sizeof(T), alignof(T)>::type;
+	std::unique_ptr<storage_t[]> storage;
 	intrusive_list<T, default_link_f> free_list;
 	size_t size = 0;
-	
+
+	object_container() = default;
+	object_container(const object_container&) = delete;
+	object_container& operator=(const object_container&) = delete;
+	object_container(object_container&& n) noexcept
+		: storage(std::move(n.storage)), free_list(std::move(n.free_list)), size(n.size) {
+		n.size = 0;
+	}
+	object_container& operator=(object_container&& n) noexcept {
+		if (this == &n) return *this;
+		destroy_all();
+		storage = std::move(n.storage);
+		free_list = std::move(n.free_list);
+		size = n.size;
+		n.size = 0;
+		return *this;
+	}
+	~object_container() {
+		destroy_all();
+	}
+
+	T* obj_at(size_t index) {
+		return reinterpret_cast<T*>(&storage[index]);
+	}
+	const T* obj_at(size_t index) const {
+		return reinterpret_cast<const T*>(&storage[index]);
+	}
+	void destroy_all() {
+		for (size_t i = 0; i != size; ++i) obj_at(i)->~T();
+		size = 0;
+	}
+
 	T* get(size_t index, bool add_new_to_free = true) {
 		if (index) index = max_size - index;
 		while (size <= index) grow(add_new_to_free);
-		return &list[index / allocation_granularity][index % allocation_granularity];
+		return obj_at(index);
 	}
-	
+
 	T* try_get(size_t index) {
 		if (index) index = max_size - index;
 		if (size <= index) return nullptr;
-		return &list[index / allocation_granularity][index % allocation_granularity];
+		return obj_at(index);
 	}
-	
+
 	T* at(size_t index) {
 		if (index) index = max_size - index;
 		if (size <= index) error("object_container::get const: invalid index %u", index);
-		return &list[index / allocation_granularity][index % allocation_granularity];
+		return obj_at(index);
 	}
-	
+
 	const T* at(size_t index) const {
 		if (index) index = max_size - index;
 		if (size <= index) error("object_container::get const: invalid index %u", index);
-		return &list[index / allocation_granularity][index % allocation_granularity];
+		return obj_at(index);
 	}
-	
+
 	void grow(bool add_new_to_free) {
 		if (size == max_size) error("object_container: attempt to grow beyond max_size");
-		list.emplace_back();
+		if (!storage) storage.reset(new storage_t[max_size]);
 		size_t n = std::min(allocation_granularity, max_size - size);
 		for (size_t i = 0; i != n; ++i) {
-			T* obj = &list.back()[i];
+			T* obj = new (obj_at(size)) T();
 			obj->index = size == 0 ? 0 : max_size - size;
 			if (add_new_to_free) free_list.push_back(*obj);
 			++size;
