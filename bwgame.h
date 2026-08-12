@@ -13299,17 +13299,40 @@ struct state_functions {
 		if (r >= game_st.map_tile_height) return game_st.map_tile_height - 1;
 		return r;
 	}
+	// sprites_on_tile_line exists for the RENDERER's scanline draw order (ui/ui.h draw loop — the
+	// sole reader outside the state_copier; verified across bwgame.h/sync.h/replay*.h/actions.h).
+	// Maintaining it costs two intrusive-list splices per sprite create/destroy and per move that
+	// crosses a 32-px row — scattered link-word writes on sprite_t, every frame, for every moving
+	// unit, bullet and overlay. Under a headless run that is pure working-set churn. Opt-in,
+	// default OFF: OPENBW_SKIP_SPRITE_TILE_LINES=1 skips ALL maintenance (the flag is read once —
+	// lists stay consistently empty, so remove() can never see an unlinked sprite); unset/0 keeps
+	// full maintenance (kill-switch). Simulation identity is provable on the rule-9 ladder because
+	// no simulation path reads the lists; a state saved under the skip and attached to a UI build
+	// would draw wrong until rebuilt — dev-only concern, rebuild-on-attach if ever needed.
+	bool skip_sprite_tile_lines() {
+		static const bool skip = [] {
+			const char* v = std::getenv("OPENBW_SKIP_SPRITE_TILE_LINES");
+			return v && v[0] == '1';
+		}();
+		return skip;
+	}
 	void add_sprite_to_tile_line(sprite_t* sprite) {
+		if (skip_sprite_tile_lines()) return;
 		size_t index = get_sprite_tile_line_index(sprite->position.y);
 		bw_insert_list(st.sprites_on_tile_line[index], *sprite);
 	}
 	void remove_sprite_from_tile_line(sprite_t* sprite) {
+		if (skip_sprite_tile_lines()) return;
 		size_t index = get_sprite_tile_line_index(sprite->position.y);
 		st.sprites_on_tile_line[index].remove(*sprite);
 	}
 
 	void move_sprite(sprite_t* sprite, xy new_position) {
 		if (sprite->position == new_position) return;
+		if (skip_sprite_tile_lines()) {
+			sprite->position = new_position;
+			return;
+		}
 		size_t old_index = get_sprite_tile_line_index(sprite->position.y);
 		size_t new_index = get_sprite_tile_line_index(new_position.y);
 		sprite->position = new_position;
