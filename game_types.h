@@ -631,6 +631,12 @@ struct unit_t: flingy_t {
 		status_flag_lifetime_expired = 0x80000000,
 	};
 
+	// ---- HOT SET (ENGINE_REVIEW_2026-08-12 §3.2): the fields the per-frame update touches for
+	// most units, packed into the first cache lines of unit_t's own span (the flingy_t base
+	// occupies the struct's first ~150 bytes and is already hot). Reorder ONLY — no field added,
+	// removed or renamed; layout is not observable (state_copier assembles field-wise, nothing
+	// memcpys unit_t, replays store actions, digests walk named fields) and the per-frame digest
+	// ladder proves trajectory equality. Do not interleave cold fields back into this block.
 	int owner;
 	const order_type_t* order_type;
 	int order_state;
@@ -643,15 +649,35 @@ struct unit_t: flingy_t {
 
 	fp8 shield_points;
 	const unit_type_t* unit_type;
+	int status_flags;
+	int movement_state;
+	uint32_t detected_flags;
+	fp8 energy;
+	const order_type_t* secondary_order_type;
+	int secondary_order_state;
+	int secondary_order_timer;
+	int move_target_timer;
+	int order_process_timer;
+	int cloak_counter;
 
 	std::pair<unit_t*, unit_t*> player_units_link;
 
 	unit_t* subunit;
 	intrusive_list<order_t, default_link_f> order_queue;
-	unit_t* auto_target_unit;	
+	unit_t* auto_target_unit;
 	unit_t* connected_unit;
 	int order_queue_count;
-	int order_process_timer;
+
+	path_t* path;
+	int pathing_collision_counter;
+	int pathing_flags;
+	rect terrain_no_collision_bounds;
+	rect unit_finder_bounding_box;
+	std::array<bool, 4> unit_finder_visited;
+	size_t unit_finder_index_from;
+	size_t unit_finder_index_to;
+
+	// ---- WARM / COLD below: original relative order preserved ----
 	int unknown_0x086;
 	int attack_notify_timer;
 	const unit_type_t* previous_unit_type;
@@ -660,15 +686,10 @@ struct unit_t: flingy_t {
 	int rank_increase;
 	int kill_count;
 	int last_attacking_player;
-	int secondary_order_timer;
 	int user_action_flags;
-	int cloak_counter;
-	int movement_state;
 	static_vector<const unit_type_t*, 5> build_queue;
 	static_vector<const unit_type_t*, 5> build_queue_limbo;
-	fp8 energy;
 	unsigned int unit_id_generation;
-	const order_type_t* secondary_order_type;
 	int damage_overlay_state;
 	fp8 hp_construction_rate;
 	fp8 shield_construction_rate;
@@ -768,21 +789,13 @@ struct unit_t: flingy_t {
 		};
 	} building;
 
-	int status_flags;
 	int carrying_flags;
 	int wireframe_randomizer;
-	int secondary_order_state;
-	int move_target_timer;
-	uint32_t detected_flags;
 	unit_t* current_build_unit;
 	std::pair<unit_t*, unit_t*> cloaked_unit_link;
 
-	path_t* path;
-	int pathing_collision_counter;
-	int pathing_flags;
 	int unused_0x106;
 	bool is_being_healed;
-	rect terrain_no_collision_bounds;
 
 	int remove_timer;
 	fp8 defensive_matrix_hp;
@@ -809,11 +822,6 @@ struct unit_t: flingy_t {
 	int repulse_flags;
 	direction_t repulse_direction;
 	size_t repulse_index;
-
-	rect unit_finder_bounding_box;
-	std::array<bool, 4> unit_finder_visited;
-	size_t unit_finder_index_from;
-	size_t unit_finder_index_to;
 };
 
 }
