@@ -121,7 +121,18 @@ struct object_container {
 
 	void grow(bool add_new_to_free) {
 		if (size == max_size) error("object_container: attempt to grow beyond max_size");
-		if (!storage) storage.reset(new storage_t[max_size]);
+		if (!storage) {
+			storage.reset(new storage_t[max_size]);
+			// Zero the WHOLE slab at allocation: BWAPI's GameImpl constructor walks getUnit over
+			// every slot < size, including grown-but-never-acquired free-list members whose
+			// placement-new left fields as raw slab content. The old deque's fresh mmap pages were
+			// zero (order_type == nullptr -> the safe null path); a recycled malloc slab holds
+			// stale decode-buffer bytes (0x8080... GRP pixel fill), and unit_dead dereferencing
+			// that as order_type SIGSEGVs at game load (map/seed-correlated: decode sizes decide
+			// what the slab recycles). One memset restores the zero-page guarantee for slots the
+			// top() wipe has not yet reached.
+			std::memset(static_cast<void*>(storage.get()), 0, sizeof(storage_t) * max_size);
+		}
 		size_t n = std::min(allocation_granularity, max_size - size);
 		for (size_t i = 0; i != n; ++i) {
 			T* obj = new (obj_at(size)) T();
@@ -148,11 +159,18 @@ struct object_container {
 		// BETWEEN top() and pop(), so the wipe must happen here — preserving index (container
 		// identity) and the intrusive link words, which stay LIVE until pop_front unlinks.
 		{
+			// Byte-typed save/restore (memcpy), NOT typed assignment: default_link_f C-casts the
+			// link pair to pair<T*,T*>*, so intrusive_list::erase reads these bytes through a
+			// DIFFERENT pointer type — gcc's TBAA at -O3 is entitled to reorder a typed store
+			// here past those reads (measured: SIGSEGV on first map load, gcc-13/amd64; clean at
+			// -O1 / -fno-strict-aliasing; AppleClang never splits pointer types so macOS builds
+			// hid it). memcpy/memset are char-typed accesses TBAA must order against everything.
 			auto saved_index = r->index;
-			auto saved_link = r->link;
+			unsigned char saved_link[sizeof(r->link)];
+			std::memcpy(saved_link, static_cast<const void*>(&r->link), sizeof(r->link));
 			std::memset(static_cast<void*>(r), 0, sizeof(T));
 			r->index = saved_index;
-			r->link = saved_link;
+			std::memcpy(static_cast<void*>(&r->link), saved_link, sizeof(r->link));
 		}
 		return r;
 	}
