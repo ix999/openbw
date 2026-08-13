@@ -15463,6 +15463,17 @@ struct state_functions {
 		set_next_target_waypoint(f, pos);
 		f->heading = heading;
 		f->next_velocity_direction = heading;
+		// Deterministic init for the movement fields this function historically left unset
+		// (current_speed, velocity, both velocity directions). Two coverage layers close the
+		// uninitialised-dead-state class: object_container::top() zero-wipes pooled slots, and
+		// this init covers every initialize_flingy consumer that is NOT object_container-pooled
+		// (thingy/path free-lists) — measured load-bearing on top of the wipe (digest fork
+		// without it). ZERO for the directions, not `heading`: the historical trajectory's
+		// read-before-write sites saw zero here, and heading-init measurably changed games.
+		f->current_speed = 0_fp8;
+		f->velocity = {};
+		f->current_velocity_direction = direction_t{};
+		f->desired_velocity_direction = direction_t{};
 		f->hp = 1_fp8;
 
 		f->sprite = create_sprite(flingy_type->sprite, pos, owner);
