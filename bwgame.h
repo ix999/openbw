@@ -21993,6 +21993,20 @@ struct game_load_functions : state_functions {
 			st.players[p].initially_active = true;
 		}
 
+		// SPAWN-FORCE seam (rule 9 verification affordance, cf. OPENBW_GAME_SEED / SB_SHORT_PATH_*):
+		// SB_FORCE_START="P:S" swaps start-location owners P and S, so player P spawns where the map
+		// seats player S. It selects the start-location INPUT; inert (byte-identical to upstream) when
+		// unset. Lets the harness place a bot on a specific start (e.g. Python's 9 o'clock) that the
+		// fixed melee seating never yields for that slot.
+		if (const char* fs_env = std::getenv("SB_FORCE_START")) {
+			int fs_p = std::atoi(fs_env);
+			const char* fs_c = fs_env;
+			while (*fs_c && *fs_c != ':') ++fs_c;
+			int fs_s = (*fs_c == ':') ? std::atoi(fs_c + 1) : -1;
+			if (fs_p >= 0 && fs_p < 12 && fs_s >= 0 && fs_s < 12 && fs_p != fs_s)
+				std::swap(game_st.start_locations[fs_p], game_st.start_locations[fs_s]);
+		}
+
 		for (size_t i = 8; i;) {
 			--i;
 			int controller = st.players[i].controller;
