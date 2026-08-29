@@ -21998,6 +21998,10 @@ struct game_load_functions : state_functions {
 		// seats player S. It selects the start-location INPUT; inert (byte-identical to upstream) when
 		// unset. Lets the harness place a bot on a specific start (e.g. Python's 9 o'clock) that the
 		// fixed melee seating never yields for that slot.
+		// REPLAY NOTE: the initial unit placement is reconstructed from map+seed on every replay, so a
+		// .rep recorded under SB_FORCE_START MUST be replayed with the SAME SB_FORCE_START (e.g. when
+		// generating an econtrace via `qa_env econtrace <rep>`) — otherwise the bot respawns at its
+		// unforced seat while the recorded orders target the forced base, desyncing the whole game.
 		if (const char* fs_env = std::getenv("SB_FORCE_START")) {
 			int fs_p = std::atoi(fs_env);
 			const char* fs_c = fs_env;
