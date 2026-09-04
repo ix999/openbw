@@ -151,27 +151,6 @@ struct object_container {
 		}
 		auto* r = &free_list.front();
 		if (r != get(r->index)) error("index mismatch for %d\n", r->index);
-		// Retail-faithful zero-on-acquire (SESSION EXPERIMENT): retail 1.16.1 zero-fills its
-		// unit arrays, so every field a creation path leaves unset reads 0 there. OpenBW leaves
-		// slot leftovers (or allocator garbage) in such fields, and reads-before-write of that
-		// dead state made the TRAJECTORY a function of heap layout (cross-build digest forks at
-		// f=3509/f=9894 that move with allocation history). The engine initializes the object
-		// BETWEEN top() and pop(), so the wipe must happen here — preserving index (container
-		// identity) and the intrusive link words, which stay LIVE until pop_front unlinks.
-		{
-			// Byte-typed save/restore (memcpy), NOT typed assignment: default_link_f C-casts the
-			// link pair to pair<T*,T*>*, so intrusive_list::erase reads these bytes through a
-			// DIFFERENT pointer type — gcc's TBAA at -O3 is entitled to reorder a typed store
-			// here past those reads (measured: SIGSEGV on first map load, gcc-13/amd64; clean at
-			// -O1 / -fno-strict-aliasing; AppleClang never splits pointer types so macOS builds
-			// hid it). memcpy/memset are char-typed accesses TBAA must order against everything.
-			auto saved_index = r->index;
-			unsigned char saved_link[sizeof(r->link)];
-			std::memcpy(saved_link, static_cast<const void*>(&r->link), sizeof(r->link));
-			std::memset(static_cast<void*>(r), 0, sizeof(T));
-			r->index = saved_index;
-			std::memcpy(static_cast<void*>(&r->link), saved_link, sizeof(r->link));
-		}
 		return r;
 	}
 	void pop() {
