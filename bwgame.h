@@ -354,6 +354,7 @@ struct state_functions {
 	flingy_t* iscript_flingy = nullptr;
 	bullet_t* iscript_bullet = nullptr;
 	unit_t* iscript_unit = nullptr;
+	bool sb_lcg_trace = false;   // sb diagnostic: print every lcg_rand draw with its source and the executing unit
 	mutable size_t unit_finder_search_index = 0;
 
 	const order_type_t* get_order_type(Orders id) const {
@@ -13283,6 +13284,8 @@ struct state_functions {
 		++st.random_counts[source];
 		++st.total_random_counts;
 		st.lcg_rand_state = st.lcg_rand_state * 22695477 + 1;
+		if (sb_lcg_trace) std::printf("  ENG-LCG src=%d unit=%d ord=%d\n", source, iscript_unit ? (int)iscript_unit->index : -1,
+		                              iscript_unit && iscript_unit->order_type ? (int)iscript_unit->order_type->id : -1);
 		return (st.lcg_rand_state >> 16) & 0x7fff;
 	}
 	int lcg_rand(int source, int from, int to) {
